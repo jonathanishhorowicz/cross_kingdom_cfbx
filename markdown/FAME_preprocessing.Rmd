@@ -1,0 +1,326 @@
+---
+title: "FAME_FINAL"
+author: "Leah Cuthbertson"
+date: "19/11/2020"
+output: word_document
+---
+
+#Load packages and working directory
+```{r, include=TRUE, echo=FALSE}
+library(phyloseq)
+library(ggplot2)
+library(Biostrings) ##Note that Biostrings also has a distance function - load phyloseq second so its distance function is not masked. 
+library(plyr)
+library(stringr)
+library(gridExtra)
+library(reshape2)
+library(knitr)
+library(vegan)
+library(decontam)
+```
+
+#Initial preprocessing bacterial data 
+
+Data was obtained from processing of raw data through QIIME1.9
+
+```{r, include=TRUE, echo=FALSE}
+all_fame<-import_biom(
+  "../data/seq_files/otu_table_hdf5.biom", "../data/seq_files/fame.tre", "../data/seq_files/rep_set_for_r.fasta"
+)
+#all_fame <- readRDS("../data/bacterial_phyloseq.rds")
+data1<-read.csv("../data/fame_map.csv", row.names=1)
+sample_data(all_fame)<-sample_data(data1)
+sample_names(all_fame)<-sample_data(all_fame)$Description
+```
+
+##Preprocessing
+Function from Aaron Saunders - does the relabelling
+```{r}
+makeTaxLabel <- function(OTU, mydata){
+ # Makes a string label using the lowest informative tax level
+ #
+ # Args:
+ #   OTU: OTU number
+ #   mydata: the phyloseq object with the tax table
+ #
+ # Returns:
+ #   a tax name
+ OTU <- as.character(OTU)  # the OTU numbers are stored as character not integer!
+ taxstrings <- as.character(tax_table(mydata)[OTU])
+ empty_strings <- c("k__", "p__", "c__", "o__", "f__", "g__", "s__")
+ tax_name <- NA
+ tax_level <- length(taxstrings)  # start at lowest tax level
+
+ while(is.na(tax_name) | 
+       (tax_name %in% empty_strings)){
+   tax_name  <- taxstrings[tax_level]
+   tax_level <- tax_level -1
+ }
+ tax_name
+}
+
+tax_table(all_fame) =gsub("s__uncultured_bacterium", as.character(NA), tax_table(all_fame))
+tax_table(all_fame) =gsub("s__uncultured_organism", as.character(NA), tax_table(all_fame))
+tax_table(all_fame) =gsub("g__uncultured", as.character(NA), tax_table(all_fame))
+
+mynames = NULL
+for (i in 1:length(taxa_names(all_fame))){
+ mynames <- rbind(mynames, c(makeTaxLabel(taxa_names(all_fame)[i],all_fame)))
+}
+
+mynames = gsub("s__", "", mynames)
+mynames = gsub("g__", "", mynames)
+mynames = gsub("f__", "", mynames)
+mynames = gsub("o__", "", mynames)
+mynames = gsub("c__", "", mynames)
+mynames = gsub("p__", "", mynames)
+
+## Append the taxa names (ie, OTU ID) and add as a new column to the tax table of the original .biom
+
+OTUID = str_c(mynames[,1],"_",seq(1,length(taxa_names(all_fame)),1))
+tax_table(all_fame) <- cbind(tax_table(all_fame), mynames=OTUID)
+head(tax_table(all_fame))
+
+## Rename tax table headings to something real
+colnames(tax_table(all_fame)) = c("Domain", "Phylum", "Class", "Order", "Family",  "Genus", "Species", "OTUID")
+## Rename the taxa_names (frequently used as plot labels by phyloseq) to be the same as the new unique informative names
+taxa_names(all_fame) <- OTUID
+```
+
+##Decontam
+1. remove less than 20 reads
+```{r}
+
+df <- as.data.frame(sample_data(all_fame)) # Put sample_data into a ggplot-friendly data.frame
+df$LibrarySize <- sample_sums(all_fame)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+ggplot(data=df, aes(x=Index, y=LibrarySize)) + geom_point()
+
+taxa_sums(all_fame)
+
+plot(sort(taxa_sums(all_fame)))
+
+Ssum<-data.frame(taxa_sums(all_fame))
+plot(Ssum[order(-Ssum$taxa_sums.all_fame.),])
+#take a closer look at the low abundance OTUs
+a1<-prune_taxa(taxa_sums(all_fame)<=100, all_fame)
+Ssum1<-data.frame(taxa_sums(a1))
+plot(Ssum1[order(-Ssum1$taxa_sums.a1.),])
+#prune out the singletons
+a2<-prune_taxa(taxa_sums(a1)<=50, a1)
+Ssum1<-data.frame(taxa_sums(a2))
+plot(Ssum1[order(-Ssum1$taxa_sums.a2.),])
+# OTUs start to plateau at about 20 reads 
+rm(Ssum)
+rm(Ssum1)
+rm(a1)
+rm(a2)
+
+all_fame = filter_taxa(all_fame, function(x) sum(x) > 20, TRUE) #remove OTUs with less than 20 read
+
+```
+2. Explore the contamination from Vibrio. Small number of reads outside the mock community. 
+These will be removed later. 
+```{r}
+vibro = subset_taxa(all_fame, Genus=="g__Vibrio")
+```
+Sort data so Decontam works 
+Missing qPCR data replaced with 1 
+```{r}
+data2<-data.frame(sample_data(all_fame))
+data2$total_16S_extract[is.na(data2$total_16S_extract)] <- 0
+
+data2$total_16S_extract[data2$total_16S_extract == 0] <- 1
+
+sample_data(all_fame)<-data2
+
+sample_data(all_fame)$total_16S_extract <- (get_variable(all_fame, "total_16S_extract"))
+sample_data(all_fame)$Negative<-sample_data(all_fame)$Study == "XS"
+```
+Run Decontam package
+```{r, include=FALSE}
+
+library(decontam)
+fame_samps<-prune_samples(sample_data(all_fame)$Study!="Negative" & sample_data(all_fame)$Study!="Mock", all_fame)
+
+contamdf.freq <- isContaminant(fame_samps, method="frequency", conc="total_16S_extract")
+head(contamdf.freq)
+
+table(contamdf.freq$contaminant) #56 contaminants
+which(contamdf.freq$contaminant)
+
+plot_frequency(fame_samps, taxa_names(all_fame)[c(which(contamdf.freq$contaminant))], conc="total_16S_extract") + 
+ xlab("DNA Concentration")
+########################################
+fame_neg<-prune_samples(sample_data(all_fame)$Study!="Mock", all_fame)
+sample_data(fame_neg)$Negative
+#ps.noncontam <- prune_taxa(!contamdf.freq$contaminant, fame_neg)
+
+
+#Look at prevalence only
+contamdf.prev <- isContaminant(fame_neg, method="prevalence", neg="Negative") 
+table(contamdf.prev$contaminant)#30 contaminants
+which(contamdf.prev$contaminant)
+
+plot_frequency(fame_neg, taxa_names(fame_neg)[c(which(contamdf.prev$contaminant))], conc="total_16S_extract") + 
+ xlab("DNA Concentration")
+```
+3.Remove the OTUs indicated by qPCR
+```{r, include=FALSE}
+all_fame <- prune_taxa(!contamdf.freq$contaminant, all_fame)
+```
+
+4.Remove known contamination
+```{r}
+all_fame = subset_taxa(all_fame, Domain != "Unassigned"|is.na(Domain))
+all_fame = subset_taxa(all_fame, Order != "o__Rhodobacterales"|is.na(Order))
+all_fame = subset_taxa(all_fame, Order != "o__Rhizobiales"|is.na(Order))
+all_fame = subset_taxa(all_fame, Family != "f__Oxalobacteraceae"|is.na(Family))
+all_fame = subset_taxa(all_fame, Phylum != "p__Cyanobacteria"|is.na(Phylum))
+all_fame = subset_taxa( all_fame, Family != "f__mitochondria"|is.na(Family))
+all_fame = subset_taxa(all_fame, Genus != "g__Vibrio"|is.na(Genus))
+```
+##Save working dataset
+```{r, include=FALSE}
+saveRDS(all_fame, file= "../data/bacterial_phyloseq.rds")
+```
+
+
+#Initial preprocessing fungal data
+Add in the fungal data
+```{r}
+fung_all <- import_biom(BIOMfilename = "../data/seq_files/fungi_raw_data/fungi_otu_table_hdf5.biom", 
+                     refseqfilename = "../data/seq_files/fungi_raw_data/rep_set_for_r.fasta")
+ 
+data2<-read.csv("../data/all_FAME_metadata.csv", row.names=2)
+sample_data(fung_all)=sample_data(data2)
+sample_names(fung_all)=sample_data(fung_all)$ID.1
+
+controls<-subset_samples(fung_all, sample_data(fung_all)$Group != "NAFD"&sample_data(fung_all)$Group != "NTM"&sample_data(fung_all)$Group != "FB"&sample_data(fung_all)$Group != "ABPA"&sample_data(fung_all)$Group != "IBX")
+#Only the crosssectional data is included in this study. Subset the data so that the samples match the bacterial samples. 
+fung_XS<-fung_all
+sample_data(fung_XS)<-sample_data(all_fame)
+fung_XS<-merge_phyloseq(fung_XS,controls)
+```
+##Preprocessing
+Function from Aaron Saunders - does the relabelling
+```{r}
+
+mynames = NULL
+for (i in 1:length(taxa_names(fung_XS))){
+ mynames <- rbind(mynames, c(makeTaxLabel(taxa_names(fung_XS)[i],fung_XS)))
+}
+
+mynames = gsub("s__", "", mynames)
+mynames = gsub("g__", "", mynames)
+mynames = gsub("f__", "", mynames)
+mynames = gsub("o__", "", mynames)
+mynames = gsub("c__", "", mynames)
+mynames = gsub("p__", "", mynames)
+
+## Append the taxa names (ie, OTU ID) and add as a new column to the tax table of the original .biom
+
+OTUID = str_c(mynames[,1],"_",seq(1,length(taxa_names(fung_XS)),1))
+tax_table(fung_XS) <- cbind(tax_table(fung_XS), mynames=OTUID)
+
+## Rename tax table headings to something real
+colnames(tax_table(fung_XS)) = c("Domain", "Phylum", "Class", "Order", "Family",  "Genus", "Species", "OTUID")
+## Rename the taxa_names (frequently used as plot labels by phyloseq) to be the same as the new unique informative names
+taxa_names(fung_XS) <- OTUID
+
+```
+
+##Decontam
+Sort data so Decontam works 
+Missing qPCR data replaced with 1 so that it will work
+```{r}
+data2<-data.frame(sample_data(fung_XS))
+data2$X18S_quantity_per_ul[is.na(data2$X18S_quantity_per_ul)] <- 0
+
+data2$X18S_quantity_per_ul<-data2$X18S_quantity_per_ul+1
+
+
+sample_data(fung_XS)<-sample_data(data2)
+```
+1. Run Decontam package
+```{r, include=FALSE}
+fung_samps<-prune_samples(sample_data(fung_XS)$Group!="Neg"&sample_data(fung_XS)$Group!="Mock"&sample_data(fung_XS)$Group!="kitneg", fung_XS)
+
+contamdf.freq <- isContaminant(fung_samps, method="frequency", conc="X18S_quantity_per_ul")
+head(contamdf.freq)
+
+table(contamdf.freq$contaminant) #74 contaminants 
+which(contamdf.freq$contaminant)
+
+plot_frequency(fung_samps, taxa_names(fung_XS)[c(which(contamdf.freq$contaminant))], conc="X18S_quantity_per_ul") + 
+ xlab("DNA Concentration")
+########################################
+sample_data(fung_XS)$Negative<-sample_data(fung_XS)$Group == "Neg"
+
+fung_neg<-prune_samples(sample_data(fung_XS)$Group!="Positive"&sample_data(fung_XS)$Group!="kitcontrol", fung_XS)
+
+ps.noncontam <- prune_taxa(!contamdf.freq$contaminant, fung_neg)
+
+#Look at prevalence only
+contamdf.prev <- isContaminant(fung_neg, method="prevalence", neg="Negative") #0 contaminants
+table(contamdf.prev$contaminant)# 19 contaminants
+which(contamdf.prev$contaminant)
+
+plot_frequency(fung_neg, taxa_names(fung_neg)[c(which(contamdf.prev$contaminant))], conc="X18S_quantity_per_ul") + 
+ xlab("DNA Concentration")
+#########################################
+
+contamdf.combo <- isContaminant(fung_XS, method="combined", conc="X18S_quantity_per_ul", neg = "Negative")
+head(contamdf.combo)
+
+table(contamdf.combo$contaminant) # 65 contaminants 
+which(contamdf.combo$contaminant)
+
+```
+Remove the OTUs indicated by qPCR
+```{r, include=FALSE}
+fung_XS <- prune_taxa(!contamdf.freq$contaminant, fung_XS)
+fung_XS
+```
+
+2. remove Batrachochytrium as only in the mocks
+
+```{r}
+fung_work<-subset_taxa(fung_XS,  Genus != "g__Batrachochytrium"| is.na(Genus))
+
+```
+3. remove less than 20 reads
+```{r}
+
+df <- as.data.frame(sample_data(fung_work)) # Put sample_data into a ggplot-friendly data.frame
+df$LibrarySize <- sample_sums(fung_work)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+ggplot(data=df, aes(x=Index, y=LibrarySize)) + geom_point()
+
+
+plot(sort(taxa_sums(fung_work)))
+
+Ssum<-data.frame(taxa_sums(fung_work))
+plot(Ssum[order(-Ssum$taxa_sums.fung_work.),])
+#take a closer look at the low abundance OTUs
+a1<-prune_taxa(taxa_sums(fung_work)<=100, fung_work)
+Ssum1<-data.frame(taxa_sums(a1))
+plot(Ssum1[order(-Ssum1$taxa_sums.a1.),])
+#prune out the singletons
+a2<-prune_taxa(taxa_sums(a1)<=50, a1)
+Ssum1<-data.frame(taxa_sums(a2))
+plot(Ssum1[order(-Ssum1$taxa_sums.a2.),])
+# OTUs start to plateau at about 20 reads 
+rm(Ssum)
+rm(Ssum1)
+rm(a1)
+rm(a2)
+
+fung_work = filter_taxa(fung_work, function(x) sum(x) > 20, TRUE) #remove OTUs with less than 20 read
+```
+Save working fungal data
+```{r, echo=FALSE, include=FALSE}
+saveRDS(fung_work, "../data/fungal_phyloseq.rds")
+```
