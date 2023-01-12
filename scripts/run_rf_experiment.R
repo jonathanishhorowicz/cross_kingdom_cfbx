@@ -226,6 +226,13 @@ cat("x has shape", nrow(x), "x", ncol(x), "\n")
 x_transformed <- transform_fn(x)
 stopifnot(identical(colnames(x_transformed), colnames(x)))
 
+# add non-microbial covariates (Gender, Age, BMI)
+confounding_vars_imp <- fread("../data/imputed_confounders.csv") %>%
+  column_to_rownames("sample_id") %>%
+  as.data.frame()
+confounding_vars_imp <- confounding_vars_imp[ rownames(x_transformed), ] 
+x_transformed <- cbind(x_transformed, confounding_vars_imp)
+
 #
 # remove rare taxa (if required). rarity is computed on the 
 # original X in case the transformation doesn't preserve zeroes
