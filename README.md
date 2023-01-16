@@ -8,7 +8,7 @@ All code assumes that `run` is the current working directory.
 
 ## Preprocessing
 
-The processing of both the bacterial and fungal QIIME files into phyloseqs can be found in [markdown/FAME_preprocessing.Rmd](markdown/FAME_preprocessing.Rmd). Note that this script is not runnable as the patient metadata files are not included to ensure data protection. Phyloseq objects that have been stripped of their full metadata (plus the metadata columns required for the analysis) are available in the `data` directory.
+The processing of both the bacterial and fungal QIIME files into phyloseqs can be found in [markdown/FAME_preprocessing.Rmd](markdown/FAME_preprocessing.Rmd). Note that this script is not runnable as the patient metadata files are not included to ensure data protection. Phyloseq objects equivalent to the processed outputs of this markdown file (apart from being stripped of their full metadata), plus the metadata columns required for the random forest analysis are available in the `data` directory.
 
 ## Random forest experiments (Figures 1 and 2)
 
@@ -64,7 +64,7 @@ Run the [scripts/dmn_clustering.R](scripts/dmn_clustering.R) script to run the s
 
 ## Ecological analyses
 
-
+The ecological analysis described in the Supplementary Material is generated using [markdown/FAME_diversity.Rmd](markdown/FAME_diversity.Rmd). The markdown is not runnable as it requires the full patient metadata, which are not provided.
 
 # Relevant citations
 

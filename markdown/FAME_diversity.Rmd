@@ -1,0 +1,374 @@
+---
+title: "FAME ecological anaylsis"
+author: "Leah Cuthbertson"
+date: "19/11/2020"
+output: word_document
+---
+
+#Load packages and working directory
+```{r, include=TRUE, echo=FALSE}
+library(phyloseq)
+library(ggplot2)
+library(Biostrings) ##Note that Biostrings also has a distance function - load phyloseq second so its distance function is not masked. 
+library(plyr)
+library(stringr)
+library(gridExtra)
+library(reshape2)
+library(knitr)
+library(vegan)
+library(decontam)
+```
+
+# BACTERIAL working data
+
+Load working data
+
+```{r, include=FALSE}
+all_fame <- readRDS("../data/bacterial_phyloseq.rds")
+```
+controls
+
+## Examine controls
+
+1.Positive controls
+
+```{r, include=FALSE}
+pos <- prune_samples(sample_data(all_fame)$Study=="Mock", all_fame)
+pos <- filter_taxa(pos, function(x) sum(x) != 0, TRUE)
+
+pos_rare <- rarefy_even_depth(pos,min(sample_sums(pos)) )
+
+pos_otu <- data.frame(t(otu_table(pos_rare)))
+pos_data <- sample_data(pos_rare)
+adonis(pos_otu~pos_data$Description, permutations = 999, method="bray")
+
+estimate_richness(pos_rare)
+```
+2. negative controls
+
+```{r, include=FALSE}
+neg <- prune_samples(sample_data(all_fame)$Study=="Negative", all_fame)
+neg <- filter_taxa(neg, function(x) sum(x) != 0, TRUE)
+plot_bar(neg, fill="Genus")
+
+```
+#BACTERIAL DATA 
+
+Remove the controls and samples with fewer than 2,000 reads
+
+```{r}
+fame_work <- prune_samples(sample_data(all_fame)$Study!="Negative"&sample_data(all_fame)$Study!="Mock", all_fame)
+fame_work <- prune_samples(sample_data(fame_work)$Study=="XS", fame_work)
+fame_work <- prune_samples(sample_sums(fame_work)>=2000, fame_work)
+```
+rarify bacterial data
+
+```{r}
+fame_work1 <- filter_taxa(fame_work, function(x) sum(x) != 0, TRUE)
+fame_work1 <- prune_samples(sample_sums(fame_work1)>=2000, fame_work1)
+fame_rare <- rarefy_even_depth(fame_work, min(sample_sums(fame_work1)), rngseed = 382)
+sample_data(fame_rare)$Group[sample_data(fame_rare)$Group=="IBX"] <- "NAFD"
+```
+<!-- Save data -->
+<!-- ```{r, echo=FALSE, include=FALSE} -->
+<!-- save(fame_rare, file= "FAME_rare.Rdata") -->
+<!-- ``` -->
+
+#FUNGAL working data
+
+Load fugnal working data
+
+```{r, include=FALSE}
+fung_work <- readRDS("../data/fungal_phyloseq.rds")
+fung_work<-prune_samples(sample_data(fung_work)$Study=="XS", fung_work)
+fung_work <- prune_samples(sample_sums(fung_work)>=2000, fung_work)
+```
+rarify fungal data
+```{r}
+fung_work1 <- filter_taxa(fung_work, function(x) sum(x) != 0, TRUE)
+fung_rare <- rarefy_even_depth(fung_work1, min(sample_sums(fung_work1)), rngseed = 2384)
+fung_rare <- prune_samples(sample_data(fung_rare)$Disease!="", fung_rare)
+```
+
+<!-- Save data -->
+<!-- ```{r, echo=FALSE, include=FALSE} -->
+<!-- save(fung_rare, file= "Fung_rare.Rdata") -->
+<!-- ``` -->
+
+# Ecological analysis
+
+Note: the following samples are excluded:
+* FAME0008 - excluded due to missing data
+* FAME0038 - missing culture data
+
+```{r}
+sample_data(fame_rare)$Group[sample_data(fame_rare)$Group=="IBX"] <- "NAFD"
+
+#remove NTM patient with missing culture data
+fame_rare <- subset_samples(fame_rare, sample_names(fame_rare) != "FAME00008")
+
+sample_data(fung_rare)$Group[sample_data(fung_rare)$Group=="IBX"] <- "NAFD"
+
+#remove NTM patient with missing NTM culture data
+fung_rare <- subset_samples(fung_rare, sample_names(fung_rare) != "FAME00008"&sample_names(fung_rare) != "FAME00381")
+
+sample_data(fame_rare)$Gender[sample_data(fame_rare)$Gender=="0"] <- "f"
+sample_data(fung_rare)$Gender[sample_data(fung_rare)$Gender=="0"] <- "f"
+
+```
+
+Summary stats of the two OTU tables
+
+```{r}
+summary(sample_sums(fung_work))
+sd(sample_sums(fung_work)) /sqrt(length(sample_sums(fung_work)))
+
+summary(sample_sums(fame_work))
+sd(sample_sums(fame_work)) /sqrt(length(sample_sums(fame_work)))
+```
+
+
+# Bacterial and fungal diversity
+
+## 1. CF vs Bx
+
+### Bacterial diversity
+
+```{r}
+sample_data(fame_rare) <- cbind(sample_data(fame_rare), estimate_richness(fame_rare, measures = c("Observed", "Shannon", "Simpson")))
+fame_data <- data.frame(sample_data(fame_rare))
+fame_data[fame_data == ""] <- NA
+
+fame_data$X16S_quantity_mean<-as.numeric(as.character(fame_data$X16S_quantity_mean))
+fame_data$log_biomass<-log10(fame_data$X16S_quantity_mean)
+
+# CF vs Bx 
+wilcox.test(Observed~Disease, fame_data)
+wilcox.test(Shannon~Disease, fame_data)
+wilcox.test(Simpson~Disease, fame_data)
+wilcox.test(X16S_quantity_mean~Disease, fame_data)
+```
+Fungal diversity
+
+```{r}
+sample_data(fung_rare) <- cbind(sample_data(fung_rare), estimate_richness(fung_rare, measures = c("Observed", "Shannon", "Simpson")))
+
+fung_data <- data.frame(sample_data(fung_rare))
+fung_data[fung_data == ""] <- NA
+
+# CF vs Bx 
+wilcox.test(Observed~Disease, fung_data)
+wilcox.test(Shannon~Disease, fung_data)
+wilcox.test(Simpson~Disease, fung_data)
+wilcox.test(X18S_quantity_per_ul~Disease, fung_data)
+``` 
+
+## beta diversity between groups
+```{r}
+fame_otu<- data.frame(t(otu_table(fame_rare)))
+fame_data <- sample_data(fame_rare)
+adonis(fame_otu~fame_data$Disease, permutations = 999, method="bray")
+
+adonis(fame_otu~fame_data$Disease, strata = fame_data$Group, permutations = 999, method="bray")
+
+### add in the treatment varibales as a strata
+fung_otu <- data.frame(t(otu_table(fung_rare)))
+fung_data<- sample_data(fung_rare)
+
+
+adonis(fung_otu~fung_data$Disease, permutations = 999, method="bray")
+adonis(fung_otu~fung_data$Disease, strata = fung_data$Group, permutations = 999, method="bray")
+
+```
+
+# 2.Fungal disease groups 
+
+Bacteria
+
+```{r}
+#Group
+library(FSA)
+library(DescTools)
+library(dunn.test)
+
+fame_data <- data.frame(fame_data)
+fame_data$Group <- as.factor(fame_data$Group)
+
+kruskal.test(Observed~Group, fame_data)
+DunnTest(Observed~Group, fame_data, method="hochberg")
+
+kruskal.test(Shannon~Group, fame_data)
+DunnTest(Shannon~Group, fame_data, method="hochberg")
+
+kruskal.test(Simpson~Group, fame_data)
+DunnTest(Simpson~Group, fame_data, method="hochberg")
+
+
+```
+
+Fungal
+
+```{r}
+# Column "Group" in metadata
+fung_data <- data.frame(fung_data)
+fung_data$Group <- as.factor(fung_data$Group)
+
+kruskal.test(Observed~Group, fung_data)
+DunnTest(Observed~Group, fung_data,method="hochberg")
+
+kruskal.test(Shannon~Group, fung_data)
+DunnTest(Shannon~Group, fung_data,method="hochberg")
+
+kruskal.test(Simpson~Group, fung_data)
+DunnTest(Simpson~Group, fung_data,method="hochberg")
+```
+
+Merge fungal diversity to fame_data
+
+```{r}
+fung_div <- cbind(sample_names(fung_rare), estimate_richness(fung_rare, measures = c("Observed", "Shannon", "Simpson")))
+
+names(fung_div) <- c("ID", "fung_Observed", "fung_Shannon", "fung_Simpson")
+
+combined_data<-merge(fame_data, fung_div, by.x = "Description", by.y = "ID")
+
+row.names(combined_data)<-combined_data$Description
+sample_data(fame_rare)<- sample_data(combined_data)
+```
+
+diversity tests between disease groups - bacteria
+
+```{r}
+sample_data(fame_rare)$disease_groups <- paste(sample_data(fame_rare)$Disease,"_",sample_data(fame_rare)$Group)
+sample_data(fung_rare)$disease_groups <- paste(sample_data(fung_rare)$Disease,"_",sample_data(fung_rare)$Group)
+
+fame_data <- data.frame(sample_data(fame_rare))
+fung_data <- data.frame(sample_data(fung_rare))
+fame_data$Group <- as.factor(fame_data$Group)
+
+kruskal.test(Observed~Group, fame_data)
+DunnTest(Observed~Group, fame_data, method="hochberg")
+
+kruskal.test(Shannon~Group, fame_data)
+DunnTest(Shannon~Group, fame_data, method="hochberg")
+
+kruskal.test(Simpson~Group, fame_data)
+DunnTest(Simpson~Group, fame_data, method="hochberg")
+
+fame_data$disease_groups <- as.factor(fame_data$disease_groups)
+kruskal.test(Observed~disease_groups, fame_data)
+DunnTest(Observed~disease_groups, fame_data,method="hochberg")
+
+kruskal.test(Shannon~disease_groups, fame_data)
+DunnTest(Shannon~disease_groups, fame_data,method="hochberg")
+
+kruskal.test(Simpson~disease_groups, fame_data)
+DunnTest(Simpson~disease_groups, fame_data,method="hochberg")
+```
+
+diversity tests between disease groups - fungi
+
+
+```{r}
+fung_data$Group <- as.factor(fung_data$Group)
+kruskal.test(Observed~Group, fung_data)
+DunnTest(Observed~Group, fung_data,method="hochberg")
+
+kruskal.test(Shannon~Group, fung_data)
+DunnTest(Shannon~Group, fung_data,method="hochberg")
+
+kruskal.test(Simpson~Group, fung_data)
+DunnTest(Simpson~Group, fung_data,method="hochberg")
+
+fung_data$disease_groups <- as.factor(fung_data$disease_groups)
+kruskal.test(Observed~disease_groups, fung_data)
+DunnTest(Observed~disease_groups, fung_data,method="hochberg")
+
+kruskal.test(Shannon~disease_groups, fung_data)
+DunnTest(Shannon~disease_groups, fung_data,method="hochberg")
+
+kruskal.test(Simpson~disease_groups, fung_data)
+DunnTest(Simpson~disease_groups, fung_data,method="hochberg")
+```
+just CF group
+```{r}
+fame_cf <- subset_samples(fame_rare, Disease == "CF")
+fung_cf <- subset_samples(fung_rare, Disease == "CF")
+
+famecf_data <- data.frame(sample_data(fame_cf))
+fungcf_data <- data.frame(sample_data(fung_cf))
+
+data2 <- data.frame(sample_data(all_fame))
+data2$total_16S_extract[is.na(data2$total_16S_extract)] <- 0
+data2$total_16S_extract[data2$total_16S_extract == 0] <- 1
+
+sample_data(all_fame) <-data2
+
+famecf_data$Group <- as.factor(famecf_data$Group)
+kruskal.test(total_16S_extract~Group, famecf_data)
+DunnTest(total_16S_extract~Group, famecf_data, method="hochberg")
+
+kruskal.test(Observed~Group, famecf_data)
+DunnTest(Observed~Group, famecf_data, method="hochberg")
+
+kruskal.test(Shannon~Group, famecf_data)
+DunnTest(Shannon~Group, famecf_data, method="hochberg")
+
+kruskal.test(Simpson~Group, famecf_data)
+DunnTest(Simpson~Group, famecf_data, method="hochberg")
+
+
+fungcf_data$Group <- as.factor(fungcf_data$Group)
+fungcf_data$X18S_quantity_per_ul<-fungcf_data$X18S_quantity_per_ul
+
+kruskal.test(X18S_quantity_per_ul~Group, fungcf_data)
+DunnTest(X18S_quantity_per_ul~Group, fungcf_data,method="hochberg")
+
+kruskal.test(Observed~Group, fungcf_data)
+DunnTest(Observed~Group, fungcf_data,method="hochberg")
+
+kruskal.test(Shannon~Group, fungcf_data)
+DunnTest(Shannon~Group, fungcf_data,method="hochberg")
+
+kruskal.test(Simpson~Group, fungcf_data)
+DunnTest(Simpson~Group, fungcf_data,method="hochberg")
+```
+
+adonis by group
+```{r}
+fame_cf <- subset_samples(fame_rare, Disease == "CF")
+fung_cf <- subset_samples(fung_rare, Disease == "CF")
+
+famecf_data <- data.frame(sample_data(fame_cf))
+fungcf_data <- data.frame(sample_data(fung_cf))
+
+famecf_otu <- t(otu_table(fame_cf))
+fungcf_otu <- t(otu_table(fung_cf))
+
+
+adonis(famecf_otu~famecf_data$Group, permutations = 999, method="bray")
+adonis(fungcf_otu~fungcf_data$Group, permutations = 999, method="bray")
+
+```
+
+#3. CFPE
+
+alpha and beta diversity tests
+
+```{r}
+
+famecf_data$Exacing <- as.factor(famecf_data$Exacing)
+wilcox.test(Observed~Exacing, famecf_data)
+wilcox.test(Shannon~Exacing, famecf_data)
+wilcox.test(Simpson~Exacing, famecf_data)
+wilcox.test(X16S_quantity_mean~Exacing, famecf_data)
+
+
+wilcox.test(Observed~Exacing, fungcf_data)
+wilcox.test(Shannon~Exacing, fungcf_data)
+wilcox.test(Simpson~Exacing, fungcf_data)
+wilcox.test(X16S_quantity_mean~Exacing, fungcf_data)
+
+adonis(fungcf_otu~fungcf_data$Exacing, permutations = 99999, method="bray")
+```
+
